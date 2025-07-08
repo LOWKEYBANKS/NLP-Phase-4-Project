@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import re
 from string import punctuation
+from pathlib import Path
 
 
 def load_raw_data(csv_path: str = "data/judge_1377884607_tweet_product_company.csv") -> pd.DataFrame:
@@ -124,20 +125,50 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-if __name__ == "__main__":
-    # Ensure required NLTK resources are present without prompting the user.
-    def _ensure_nltk():
-        import nltk  # noqa: WPS433
-        try:
-            nltk.data.find("corpora/stopwords")
-        except LookupError:
-            nltk.download("stopwords", quiet=True)
+CACHE_PATH = Path("data/processed_df.parquet")
 
+
+def _ensure_nltk() -> None:  # moved outside to reuse in caching
+    """Download required NLTK corpora once (quietly)."""
+    import nltk  # noqa: WPS433
+
+    try:
+        nltk.data.find("corpora/stopwords")
+    except LookupError:
+        nltk.download("stopwords", quiet=True)
+
+
+def get_processed_dataframe(force_refresh: bool = False) -> pd.DataFrame:
+    """Return the cleaned dataframe, using on-disk cache when available.
+
+    Parameters
+    ----------
+    force_refresh: bool, default False
+        If True, ignore any cached file and rebuild from raw CSV.
+    """
+    if not force_refresh and CACHE_PATH.exists():
+        return pd.read_parquet(CACHE_PATH)
+
+    # Rebuild and store cache
     _ensure_nltk()
+    raw = load_raw_data()
+    processed = prepare_dataframe(raw)
 
-    raw_df = load_raw_data()
-    processed_df = prepare_dataframe(raw_df)
+    # Attempt Parquet first (needs pyarrow or fastparquet)
+    try:
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        processed.to_parquet(CACHE_PATH, index=False)
+    except Exception:  # pragma: no cover – fall back when backend missing
+        fallback = CACHE_PATH.with_suffix(".pkl")
+        processed.to_pickle(fallback)
+        print(f"[sentiment_pipeline] Parquet backend missing, cached as {fallback.name}")
+
+    return processed
+
+
+if __name__ == "__main__":
+    df = get_processed_dataframe()
 
     # Show basic info as in the notebook
-    print("Processed dataset shape:", processed_df.shape)
-    print(processed_df.head())
+    print("Processed dataset shape:", df.shape)
+    print(df.head())
