@@ -2,13 +2,16 @@ import pandas as pd
 import numpy as np
 import re
 from string import punctuation
-from nltk.tokenize import RegexpTokenizer
-from nltk.corpus import stopwords
 
 
 def load_raw_data(csv_path: str = "data/judge_1377884607_tweet_product_company.csv") -> pd.DataFrame:
-    """Load the raw CSV file shipped with the repository."""
-    return pd.read_csv(csv_path)
+    """Load the raw CSV file with explicit dtypes to speed parsing & cut RAM usage."""
+    dtype_map = {
+        "tweet_text": "string",
+        "emotion_in_tweet_is_directed_at": "category",
+        "is_there_an_emotion_directed_at_a_brand_or_product": "category",
+    }
+    return pd.read_csv(csv_path, dtype=dtype_map)
 
 
 # -----------------------------------------------------------------------------
@@ -33,17 +36,18 @@ def encode_emojis(text: str) -> str:
 
 
 def process_tweet(tweet: str) -> list[str]:
-    """Lower-case, tokenise and strip stop-words + punctuation."""
+    """Lower-case, tokenize and strip stop-words & punctuation (lazy NLTK import)."""
+    # Heavy NLTK imports are moved inside the function so the module itself is cheap to import.
+    from nltk.tokenize import RegexpTokenizer  # noqa: WPS433 (allow internal import)
+    from nltk.corpus import stopwords  # noqa: WPS433
+
     tweet = tweet.lower()
     pattern = r"\b\w+(?:'\w+)?\b"
     tokenizer = RegexpTokenizer(pattern)
     tokens = tokenizer.tokenize(tweet)
 
-    tokens = [
-        token
-        for token in tokens
-        if token not in stopwords.words("english") and token not in punctuation
-    ]
+    stop_words = set(stopwords.words("english"))
+    tokens = [token for token in tokens if token not in stop_words and token not in punctuation]
     return tokens
 
 
@@ -121,6 +125,16 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    # Ensure required NLTK resources are present without prompting the user.
+    def _ensure_nltk():
+        import nltk  # noqa: WPS433
+        try:
+            nltk.data.find("corpora/stopwords")
+        except LookupError:
+            nltk.download("stopwords", quiet=True)
+
+    _ensure_nltk()
+
     raw_df = load_raw_data()
     processed_df = prepare_dataframe(raw_df)
 
