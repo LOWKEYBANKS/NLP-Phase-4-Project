@@ -3,6 +3,7 @@ import numpy as np
 import re
 from string import punctuation
 from pathlib import Path
+from collections import Counter
 
 
 def load_raw_data(csv_path: str = "data/judge_1377884607_tweet_product_company.csv") -> pd.DataFrame:
@@ -50,6 +51,61 @@ def process_tweet(tweet: str) -> list[str]:
     stop_words = set(stopwords.words("english"))
     tokens = [token for token in tokens if token not in stop_words and token not in punctuation]
     return tokens
+
+
+# -----------------------------------------------------------------------------
+# Text processing utilities (vectorised + optional parallelism)
+# -----------------------------------------------------------------------------
+
+_TOKEN_PATTERN = r"\b\w+(?:'\w+)?\b"  # pre‐compiled pattern for performance
+
+
+def _get_stop_words() -> set[str]:
+    """Return a cached set of English stop-words (downloads once)."""
+    _ensure_nltk()
+    from nltk.corpus import stopwords  # noqa: WPS433 (lazy heavy import)
+
+    return set(stopwords.words("english"))
+
+
+def tokenize_series(text_series: pd.Series, n_jobs: int = 1) -> pd.Series:
+    """Vectorised tokenisation of a pandas Series.
+
+    Parameters
+    ----------
+    text_series: pd.Series
+        Series of strings to tokenize.
+    n_jobs: int, default 1
+        Number of parallel processes. If >1, uses joblib.Parallel.
+    """
+    # Lower-case + regex token extraction (vectorised, no Python loop)
+    tokens_series = text_series.str.lower().str.findall(_TOKEN_PATTERN)
+
+    stop_words = _get_stop_words()
+
+    if n_jobs == 1:
+        return tokens_series.apply(
+            lambda toks: [t for t in toks if t not in stop_words and t not in punctuation]
+        )
+
+    # Parallel branch (lazy import of joblib to avoid overhead if unused)
+    from joblib import Parallel, delayed  # noqa: WPS433
+
+    def _filter_tokens(tok_list):
+        return [t for t in tok_list if t not in stop_words and t not in punctuation]
+
+    processed = Parallel(n_jobs=n_jobs, backend="loky")(
+        delayed(_filter_tokens)(tok_list) for tok_list in tokens_series
+    )
+    return pd.Series(processed, index=text_series.index)
+
+
+# Simple frequency helper using Counter (drop-in replacement for NLTK.FreqDist)
+
+def top_tokens(token_series: pd.Series, top_n: int = 20) -> list[tuple[str, int]]:
+    """Return *top_n* most common tokens across a Series of token lists."""
+    flat_tokens = (tok for sublist in token_series for tok in sublist)
+    return Counter(flat_tokens).most_common(top_n)
 
 
 # -----------------------------------------------------------------------------
@@ -117,7 +173,9 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df["cleaned_tweet"] = df["tweet"].apply(
         lambda text: encode_emojis(remove_html_urls_mentions(text))
     )
-    df["tokenized_tweets"] = df["cleaned_tweet"].apply(process_tweet)
+
+    # Vectorised tokenisation; set n_jobs>1 for parallel processing
+    df["tokenized_tweets"] = tokenize_series(df["cleaned_tweet"], n_jobs=1)
 
     # Re-order columns for convenience
     df = df[["tweet", "cleaned_tweet", "tokenized_tweets", "brand_product", "emotion"]]
